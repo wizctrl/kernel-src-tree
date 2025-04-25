@@ -1,0 +1,65 @@
+name: VM Test
+on:
+  # Push for testing.  Likely this will be on pull-request
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  vm-test:
+    runs-on: kernel-build
+    container:
+      image: rockylinux:9.2
+      options: --cpus 8 --privileged
+    steps:
+      - name: Install tools and Libraries
+        run: |
+          dnf install epel-release -y
+
+          # Packages for booting a vm
+          dnf install qemu-kvm virtme-ng -y
+
+          # Packages for building the kernel
+          dnf groupinstall 'Development Tools' -y
+          dnf install --enablerepo=crb bc dwarves kernel-devel openssl-devel elfutils-libelf-devel -y
+
+          # Packages for testing the kernel
+          dnf config-manager --set-enabled devel
+          dnf install alsa-lib-devel bison clang conntrack-tools elfutils-libelf-devel ethtool flex fuse-devel gcc git glibc-static iperf3 iproute iproute-tc iputils iptables-nft jq libasan-static libcap-devel libcap-ng-devel libmnl-devel libubsan make net-tools netsniff-ng nmap-ncat nftables numactl-devel openssl-devel popt-static python3-jsonschema python3-pyyaml rsync socat sudo teamd -y
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: "${{ github.event.pull_request.head.sha }}"
+          fetch-depth: 0
+
+      - name: Run vng
+        run: |
+          # At the moment v9fs is broken in lts92 so fix it up with sed until we get it patched properly
+          sed -i 's/set_page_dirty = v9fs_set_page_dirty/dirty_folio = v9fs_dirty_folio/g' fs/9p/vfs_addr.c
+          sed -i 's/v9fs_set_page_dirty __set_page_dirty_nobuffers/v9fs_dirty_folio filemap_dirty_folio/g' fs/9p/vfs_addr.c
+
+          # Build our kernel using vng
+          # Tell vng to use our config file.  vng will enable a few extra options needed to mount
+          # the host filesystem as cow.  Mainly v9fs support.
+          vng -b --config configs/kernel-x86_64-rhel.config
+
+          # Build kselftests
+          make -C tools/testing/selftests
+
+          # Download and test current kernel  TODO: Really we want this to be the latest 9.2 LTS kernel
+          dnf install kernel kernel-tools -y
+
+          # Since we installed the kernel package in a pretty bare continer it isn't actually installed in /boot,
+          # so just use the copy in /lib/modules for testing
+          vng -r /lib/modules/*/vmlinuz --cpus $(nproc) --qemu /usr/libexec/qemu-kvm --disable-microvm --force-initramfs --rw -- sh -c 'make kselftest SKIP_TARGETS="breakpoints lkdtm proc"' | tee selftests-before.log
+
+          # Test our source built kernel
+          vng --cpus $(nproc) --qemu /usr/libexec/qemu-kvm --disable-microvm --force-initramfs --rw -- sh -c 'make kselftest SKIP_TARGETS="breakpoints lkdtm proc"' | tee selftests-after.log
+
+          # See what we got
+          echo before:
+          grep ^ok selftests-before.log | wc -l
+          echo after:
+          grep ^ok selftests-after.log | wc -l
+
