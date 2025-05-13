@@ -52,7 +52,7 @@ jobs:
 
           # Since we installed the kernel package in a pretty bare continer it isn't actually installed in /boot,
           # so just use the copy in /lib/modules for testing
-          #vng -r /lib/modules/*/vmlinuz --cpus $(nproc) --qemu /usr/libexec/qemu-kvm --disable-microvm --force-initramfs --rw -- sh -c 'make kselftest SKIP_TARGETS="breakpoints lkdtm proc"' | tee selftests-before.log
+          vng -r /lib/modules/*/vmlinuz --cpus $(nproc) --qemu /usr/libexec/qemu-kvm --disable-microvm --force-initramfs --rw -- sh -c 'uname -r && make kselftest SKIP_TARGETS="breakpoints lkdtm proc"' | tee selftests-before.log
 
           # Test our source built kernel
           vng --cpus $(nproc) --qemu /usr/libexec/qemu-kvm --disable-microvm --force-initramfs --rw -- sh -c 'uname -r && make kselftest SKIP_TARGETS="breakpoints lkdtm proc"' | tee selftests-after.log
