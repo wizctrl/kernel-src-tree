@@ -1,0 +1,108 @@
+name: Automated kernel build and test
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Kernel branch to build (required)"
+        required: true
+        type: string
+      build_image:
+        description: "Tag of the *-kernel-builder image used by build_kernel.sh (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    # Full clone for tag/merge-base ops
+    - name: Checkout kernel-src-tree
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.branch }}
+        fetch-depth: 0 # avoid shallow-clone surprises
+
+    # Host deps + KVM / FUSE validation
+    - name: Install host dependencies & verify KVM/FUSE
+      run: |
+        set -euxo pipefail
+        sudo apt-get update
+        sudo apt-get install -y fuse3 cpu-checker
+        sudo modprobe fuse # guarantee /dev/fuse
+        if ! sudo kvm-ok ; then
+          echo "::error::KVM acceleration not available on this runner."
+          exit 1
+        fi
+
+    # Podman (root-ful)
+    - name: Install Podman
+      uses: zyclonite/setup-podman@v2
+
+    # Resolve which *-kernel-builder image should be used
+    - name: Resolve build image
+      id: vars
+      shell: bash
+      run: |
+        set -e
+        if [[ -n "${{ inputs.build_image }}" ]]; then
+          IMAGE_IN="${{ inputs.build_image }}"
+        elif [[ -f .container_build_image ]]; then
+          IMAGE_IN="$(< .container_build_image)"
+          [[ -z "$IMAGE_IN" ]] && { echo "::error::.container_build_image is empty"; exit 1; }
+        else
+          echo "::error::No build_image supplied and .container_build_image not found."; exit 1
+        fi
+        echo "image=$IMAGE_IN" >>"$GITHUB_OUTPUT"
+        echo "safe_branch=$(echo '${{ inputs.branch }}' | tr '/:@ ' '-')" >>"$GITHUB_OUTPUT"
+        echo "safe_image=$(echo "$IMAGE_IN"        | tr '/:@ ' '-')" >>"$GITHUB_OUTPUT"
+
+    # Kernel build inside CIQ builder
+    - name: Build kernel inside CIQ builder container
+      env:
+        IMAGE: ${{ steps.vars.outputs.image }}
+      run: |
+        set -euxo pipefail
+        mkdir -p output
+        sudo podman run --rm --pull=always \
+          --privileged \
+          --device=/dev/fuse \
+          --device=/dev/kvm \
+          -v "$PWD":/src \
+          -v "$PWD/output":/output \
+          --security-opt label=disable \
+          pulp.prod.ciq.dev/ciq/cicd/lts-images/builder \
+          build_kernel.sh -b "${{ inputs.branch }}" -c "${IMAGE}"
+
+    # Artifacts: qcow2 + metadata
+    - name: Upload QCOW2 and metadata
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-build-${{ steps.vars.outputs.safe_branch }}-${{ steps.vars.outputs.safe_image }}
+        path: |
+          output/*.qcow2
+          output/last_build_image.txt
+        retention-days: 7
+        if-no-files-found: warn
+
+    # Artifacts: logs
+    - name: Upload build & dmesg logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-logs-${{ steps.vars.outputs.safe_branch }}-${{ steps.vars.outputs.safe_image }}
+        path: |
+          output/*.log
+        retention-days: 7
+        if-no-files-found: warn
+
+    # Full Podman cleanup – keep runner totally ephemeral
+    - name: Podman cleanup
+      if: always()
+      run: |
+        sudo podman image rm -a -f || true
+        sudo podman system prune -a -f
