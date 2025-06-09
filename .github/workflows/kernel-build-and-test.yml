@@ -42,7 +42,9 @@ jobs:
 
     # Podman (root-ful)
     - name: Install Podman
-      uses: zyclonite/setup-podman@v2
+      run: |
+        sudo apt-get -y install podman
+        podman --version
 
     # Resolve which *-kernel-builder image should be used
     - name: Resolve build image
@@ -60,7 +62,7 @@ jobs:
         fi
         echo "image=$IMAGE_IN" >>"$GITHUB_OUTPUT"
         echo "safe_branch=$(echo '${{ inputs.branch }}' | tr '/:@ ' '-')" >>"$GITHUB_OUTPUT"
-        echo "safe_image=$(echo "$IMAGE_IN"        | tr '/:@ ' '-')" >>"$GITHUB_OUTPUT"
+        echo "safe_image=$(echo "$IMAGE_IN" | tr '/:@ ' '-')" >>"$GITHUB_OUTPUT"
 
     # Kernel build inside CIQ builder
     - name: Build kernel inside CIQ builder container
