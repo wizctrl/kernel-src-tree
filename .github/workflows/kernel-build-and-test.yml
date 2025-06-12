@@ -26,7 +26,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         ref: ${{ inputs.branch }}
-        fetch-depth: 0 # avoid shallow-clone surprises
 
     # Host deps + KVM / FUSE validation
     - name: Install host dependencies & verify KVM/FUSE
